@@ -8,12 +8,11 @@ discrete model synthesis chapter of his dissertation. (2D)
 
 @author: Renato Barros Arantes
 """
-
-import random
 import itertools
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
+from numpy.random import choice
 
 class DiscreteModeSyntehsis(object):
     
@@ -30,8 +29,6 @@ class DiscreteModeSyntehsis(object):
         self.Y = source_image.size[1]
         self.label_image = np.zeros((self.X, self.Y), dtype=int)
         self._count_number_of_colors()
-        self.number_of_colors = len(self.colors_set)
-        print(self.number_of_colors)
         self._calc_transition_matrix()
         self.block_x_size = block_x_size
         assert self.block_x_size > 0 and self.block_x_size <= self.X
@@ -48,14 +45,31 @@ class DiscreteModeSyntehsis(object):
             
             :param image: source image or example model (E)
             :return: returns nothing
-         '''
+        '''
+        # used to calculate the probability distribution of each label (color)
+        color_count = {} 
         for x, y in itertools.product(range(self.X), range(self.Y)):
             color = self.source_image.getpixel((x, y))
             self.colors_set.add(color)
-        print('Number of distinct colors = {}'.format(len(self.colors_set)))
+            # count how many times each label appear.
+            if not color in color_count:
+                color_count[color] = 1
+            else:
+                color_count[color] += 1
+        self.label_to_color = list(self.colors_set)
+        self.number_of_colors = len(self.colors_set)
+        print('Number of distinct colors = {}'.format(self.number_of_colors))
         # creates a unique id colors map 
         for idx, color in enumerate(self.colors_set):
             self.colors_to_label[color] = idx
+        # calculate the probability distribution of each label
+        self.probability_distribution = {}
+        number_of_labels = self.X*self.Y
+        t = 0.0
+        for color, count in color_count.items():
+            label = self.colors_to_label[color]
+            self.probability_distribution[label] = count/number_of_labels
+            t += self.probability_distribution[label]
         # list of possibles labels
         self.labels = self.colors_to_label.values()
         # getpixel is very slow, so now we create a matrix with the same shape
@@ -66,8 +80,6 @@ class DiscreteModeSyntehsis(object):
         
         plt.imshow(self.source_image)
         plt.show()
-#        plt.matshow(self.label_image)
-#        plt.show()
         
     def _get_label(self, x, y):
         '''
@@ -154,6 +166,7 @@ class DiscreteModeSyntehsis(object):
         x = p[0]
         y = p[1]
         b = self.M[x, y] # p label
+        if b == -1: return
         self.points_to_update.append(p) # u is a stack of points to update.
         # Since label b is assigned to p, remove all other labels.
         self.catalog[p] = set([b])
@@ -163,30 +176,28 @@ class DiscreteModeSyntehsis(object):
             self._update_neighbor(v, (-1, 0), self.x_transition_matrix_transpose) # -i
             self._update_neighbor(v, (0, 1), self.y_transition_matrix) # j
             self._update_neighbor(v, (0, -1), self.y_transition_matrix_transpose) # -j
-        
-    def get_output_image(self):
-        label_to_color = list(self.colors_set)
-        output_image = Image.new('RGB', (self.output_x_size, self.output_y_size))
-        pixels = output_image.load() # create the pixel map
-        for x, y in itertools.product(range(self.output_x_size), 
-                                      range(self.output_y_size)):
-            pixels[x, y] = label_to_color[self.M[x, y]]
-        plt.imshow(output_image)
-        plt.show()
-        return output_image
+      
+    def _weighted_random_choice(self, candidates):
+        list_of_candidates = []
+        list_of_prob_dist = []
+        for label in candidates:
+            prob_dist = self.probability_distribution[label]
+            list_of_candidates.append(label)
+            list_of_prob_dist.append(prob_dist)
+        array_of_prob_dist = np.array(list_of_prob_dist)
+        array_of_prob_dist /= array_of_prob_dist.sum()
+        return choice(list_of_candidates, 1, p=array_of_prob_dist)
+            
         
     def execute3_4(self):
         '''
             Algorithm 3.4 Final Discrete Model Synthesis Algorithm
         '''
         # Loop through each block
-        print(2*self.output_x_size//self.block_x_size, 2*self.output_y_size//self.block_y_size)
         for qx, qy in itertools.product(
                 range(2*self.output_x_size//self.block_x_size), 
                 range(2*self.output_y_size//self.block_y_size)): 
             q = (qx, qy)
-            print(q)
-            self.get_output_image()
             # no label has been assigned to this point yet.
             for x, y in itertools.product(range(self.output_x_size), 
                                           range(self.output_y_size)):
@@ -214,7 +225,7 @@ class DiscreteModeSyntehsis(object):
                         break
                     else:
                         # Select any value of b for which C[p, b] = 1 at random.
-                        b = random.choice(tuple(self.catalog[p]))
+                        b = self._weighted_random_choice(self.catalog[p])
                         self.M[x, y] = b
                         self._update_catalog(p)
             # If M becomes inconsistent, restore its previous value.
@@ -231,7 +242,6 @@ class DiscreteModeSyntehsis(object):
             p = (x, y)
             self.catalog[p] = set(self.labels)
         # Loop through each block
-        print(self.output_x_size, self.output_y_size)
         for x in range(self.output_x_size):
             #self.get_output_image()
             for y in range(self.output_y_size): 
@@ -239,10 +249,21 @@ class DiscreteModeSyntehsis(object):
                 # Check if the catalog is empty
                 assert len(self.catalog[p]) != 0
                 # Select any value of b for which C[p, b] = 1 at random.
-                b = random.choice(tuple(self.catalog[p]))
+                b = self._weighted_random_choice(self.catalog[p])
                 self.M[x, y] = b
                 self._update_catalog(p)
-                           
+
+    def get_output_image(self):
+        output_image = Image.new('RGB', (self.output_x_size, self.output_y_size))
+        pixels = output_image.load() # create the pixel map
+        for x, y in itertools.product(range(self.output_x_size), 
+                                      range(self.output_y_size)):
+            label = self.M[x, y]
+            pixels[x, y] = self.label_to_color[label]
+        plt.imshow(output_image)
+        plt.show()
+        return output_image
+                                   
 if __name__ == '__main__':
 #    random.seed(42)
     sample_name = 'home-thumb.png'
@@ -251,6 +272,6 @@ if __name__ == '__main__':
     Y = image.size[1]
     print('x={}, y={}'.format(X, Y))
     dms = DiscreteModeSyntehsis(image, X, Y)
-    dms.execute3_1()
-    dms.get_output_image()
-    mx = dms.x_transition_matrix
+    for i in range(10):
+        dms.execute3_1()
+        dms.get_output_image()
