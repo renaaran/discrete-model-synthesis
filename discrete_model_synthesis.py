@@ -8,23 +8,25 @@ discrete model synthesis chapter of his dissertation. (2D)
 
 @author: Renato Barros Arantes
 """
+import cv2
 import itertools
 import numpy as np
 import matplotlib.pyplot as plt
+
 from PIL import Image
 from numpy.random import choice
 
 class DiscreteModelSynthesis(object):
     
     class Pattern(object):
-        def __init__(self, pattern):
-            self.pattern = np.copy(pattern)
+        def __init__(self, pixels):
+            self.pixels = np.copy(pixels)
             
         def __eq__(self, another):
-            return np.array_equal(self.pattern, another.pattern)
+            return np.array_equal(self.pixels, another.pixels)
         
         def __hash__(self):
-            return hash(str(self.pattern))
+            return hash(str(self.pixels))
         
     def __init__(self, source_image, output_x_size, output_y_size, 
                  pattern_block_size = 2):
@@ -38,7 +40,7 @@ class DiscreteModelSynthesis(object):
         self.model_x_size = (output_x_size//pattern_block_size)*pattern_block_size
         self.model_y_size = (output_y_size//pattern_block_size)*pattern_block_size
         print(self.model_x_size, self.model_y_size)
-        self.M = np.full((self.model_x_size, self.model_y_size), -1, dtype=int)
+        self.M = np.zeros((self.model_y_size, self.model_x_size), dtype=int)
         
     def translate_source_image_to_pattern_matrix(self, block_size):
         '''
@@ -52,38 +54,41 @@ class DiscreteModelSynthesis(object):
         Y = (self.source_image.size[1]//block_size)*block_size
         pattern_matrix_cols = X//block_size
         pattern_matrix_rows = Y//block_size
-        self.pattern_matrix = np.zeros((pattern_matrix_cols, 
-                                        pattern_matrix_rows), dtype=int)
-        for x, y in itertools.product(range(0, X, block_size), 
-                                      range(0, Y, block_size)):
+        self.pattern_matrix = np.zeros((pattern_matrix_rows,
+                                        pattern_matrix_cols), dtype=int)
+        source_image_pixels = self.source_image.load()
+        for y, x in itertools.product(range(0, Y, block_size),
+                                      range(0, X, block_size)):
             
             # allocate block for the new pattern
-            block = np.full((block_size, block_size), -1, 
-                            dtype=DiscreteModelSyntehsis.Pattern)
-            
+            pixels = np.zeros((block_size, block_size, 3), dtype=int)
             for i, j in itertools.product(range(block_size), range(block_size)):
-                block[i, j] = self.source_image.getpixel((x+i, y+j))
-                
-            pattern = DiscreteModelSyntehsis.Pattern(block)
+                p = source_image_pixels[x+j, y+i]
+                pixels[i, j, 0] = p[0]
+                pixels[i, j, 1] = p[1]
+                pixels[i, j, 2] = p[2]
+
+            pattern = DiscreteModelSynthesis.Pattern(pixels)
             if pattern not in self.source_image_patterns:
                 self.source_image_patterns[pattern] = current_pattern_id
                 current_pattern_id += 1
                 
-            px = x//block_size
-            py = y//block_size
-            self.pattern_matrix[px, py] = self.source_image_patterns[pattern]
+            row = y//block_size
+            col = x//block_size
+            self.pattern_matrix[row, col] = self.source_image_patterns[pattern]
 
-        self.patterns_ids = self.source_image_patterns.values()
+        self.patterns_ids = set(self.source_image_patterns.values())
         self.number_of_patterns = len(self.source_image_patterns)
+        print('number_of_patterns={}'.format(self.number_of_patterns))
 
     def calculate_probability_distribution(self):
         '''
             Calculates the labels probability distribution over patterns.
         '''
         patterns_count = {}
-        for x, y in itertools.product(range(self.pattern_matrix.shape[0]), 
-                                      range(self.pattern_matrix.shape[1])):
-            pattern_id = self.pattern_matrix[x, y]
+        for row, col in itertools.product(range(self.pattern_matrix.shape[0]),
+                                          range(self.pattern_matrix.shape[1])):
+            pattern_id = self.pattern_matrix[row, col]
             # count how many times each pattern appear.
             if not pattern_id in patterns_count:
                 patterns_count[pattern_id] = 1
@@ -96,6 +101,16 @@ class DiscreteModelSynthesis(object):
         for pattern_id, count in patterns_count.items():
             self.probability_distribution[pattern_id] = count/pm_elements_count
 
+    def get_pattern(self, row, col):
+        '''
+            Returns the pattern at the given coordinate in the mattern matrix.
+            
+            :param row: row pattern coordinate.
+            :param col: col pattern coordinate.
+            :return: returns the label at coordinate (row,col).
+        '''
+        return self.pattern_matrix[row, col]
+    
     def calculate_transition_matrix(self):
         '''
             For a given input image (E), the set of equations bellow acts as a constraint 
@@ -111,21 +126,32 @@ class DiscreteModelSynthesis(object):
         ''' 
         
         self.x_transition_matrix = np.zeros((self.number_of_patterns, 
-                                           self.number_of_patterns), dtype=bool)
+                                             self.number_of_patterns), dtype=bool)
         self.y_transition_matrix = np.zeros((self.number_of_patterns, 
-                                           self.number_of_patterns), dtype=bool)
-
-        for x, y in itertools.product(range(self.pattern_matrix.shape[0]-1), 
-                                      range(self.pattern_matrix.shape[1]-1)):
-            pattern = self.get_pattern(x, y)
-            neighbour_right_pattern = self.get_pattern(x+1, y)
-            neighbour_bellow_pattern = self.get_pattern(x, y+1)
-            self.x_transition_matrix[pattern, neighbour_right_pattern]  = 1
-            self.y_transition_matrix[pattern, neighbour_bellow_pattern] = 1
-            
+                                             self.number_of_patterns), dtype=bool)
+        Y = self.pattern_matrix.shape[0]
+        X = self.pattern_matrix.shape[1]
+        for row, col in itertools.product(range(Y), range(X)):
+            pattern = self.get_pattern(row, col)
+            if col+1 < X:
+                neighbour_right_pattern = self.get_pattern(row, col+1)
+                self.x_transition_matrix[pattern, neighbour_right_pattern] = 1
+#            else:
+#                # x loop! :)
+#                row_beginning = self.get_pattern(row, 0)
+#                self.x_transition_matrix[pattern, row_beginning] = 1
+                
+            if row+1 < Y:
+                neighbour_bellow_pattern = self.get_pattern(row+1, col)
+                self.y_transition_matrix[pattern, neighbour_bellow_pattern] = 1
+#            else:
+#               # y loop! :)
+#                col_beginning = self.get_pattern(0, col)
+#                self.y_transition_matrix[pattern, col_beginning] = 1
+              
         self.x_transition_matrix_transpose = self.x_transition_matrix.transpose()
         self.y_transition_matrix_transpose = self.y_transition_matrix.transpose()
-            
+
     def weighted_random_choice(self, candidates):
         list_of_candidates = []
         list_of_prob_dist = []
@@ -136,54 +162,52 @@ class DiscreteModelSynthesis(object):
         array_of_prob_dist = np.array(list_of_prob_dist)
         array_of_prob_dist /= array_of_prob_dist.sum()
         return choice(list_of_candidates, 1, p=array_of_prob_dist)
-                            
-    def get_pattern(self, x, y):
-        '''
-            Returns the pattern at the given coordinate in the mattern matrix.
-            
-            :param x: x pattern coordinate.
-            :param y: y pattern coordinate.
-            :return: returns the label at coordinate (x,y).
-        '''
-        return self.pattern_matrix[x, y]
-    
+       
+    def exist_transition_to(self, transition_matrix, catalog, c):
+         for b in catalog:
+                if transition_matrix[b, c] == True:
+                    return True
+         return False
+                     
     def update_neighbor(self, v, d, tm):
         '''
-            Implements algorithm 3.3
+            The catalog C contains a list of acceptable labels at each point. 
+            The label c is only acceptable at v + d, if there exists a label b 
+            that is acceptable at point v meaning C(x, b) = 1 and that can be 
+            adjacent to c meaning tm[b, c] = 1.
         '''
         vd = (v[0]+d[0], v[1]+d[1])
         # outside border...
-        if vd not in self.catalog:
-            return
+        if vd not in self.catalog: return
         # Check if each label c belongs in the catalog at v + d
-        for c in range(self.number_of_patterns):
-            if c in self.catalog[vd]:
-                is_inconsistent = True
+        vd_catalog = self.catalog[vd].copy()
+        for c in vd_catalog:
+            if not self.exist_transition_to(tm, self.catalog[v], c):
                 # There is no b such that C[v, b] = 1 and T[b, c] = 1
-                for b in range(self.number_of_patterns):
-                    if b in self.catalog[v] and tm[b, c] == 1:
-                        is_inconsistent = False
-                        break
-                if is_inconsistent:
-                    self.patterns_to_update.append(vd)
-                    self.catalog[vd].remove(c)
-            
+                self.patterns_to_update.add(vd)
+                self.catalog[vd].remove(c)
+                assert len(self.catalog[vd]) != 0, \
+                    'No transition from v={} to vd={}:  v_catalog={} -> vd_catalog={}' \
+                    .format(v, vd, self.catalog[v], vd_catalog)
+    
     def update_catalog(self, p):
         '''
             Update catalog to reflect assigning of label b to point p.
         '''
-        x = p[0]
-        y = p[1]
-        b = self.M[x, y] # p label
-        self.patterns_to_update = [p] # a stack of points to update.
+        y = p[0]
+        x = p[1]
+        # p label
+        b = self.M[y, x] 
         # Since label b is assigned to p, remove all other labels.
         self.catalog[p] = set([b])
+        # A stack of points to update.
+        self.patterns_to_update = set([p]) 
         while len(self.patterns_to_update) > 0:
             v = self.patterns_to_update.pop()
-            self.update_neighbor(v, (1, 0), self.x_transition_matrix) # i
-            self.update_neighbor(v, (-1, 0), self.x_transition_matrix_transpose) # -i
-            self.update_neighbor(v, (0, 1), self.y_transition_matrix) # j
-            self.update_neighbor(v, (0, -1), self.y_transition_matrix_transpose) # -j
+            self.update_neighbor(v, (0, 1), self.x_transition_matrix) # i
+            self.update_neighbor(v, (0, -1), self.x_transition_matrix_transpose) # -i
+            self.update_neighbor(v, (1, 0), self.y_transition_matrix) # j
+            self.update_neighbor(v, (-1, 0), self.y_transition_matrix_transpose) # -j
       
     def execute(self):
         '''
@@ -191,23 +215,21 @@ class DiscreteModelSynthesis(object):
         '''
         self.catalog = {}
         # no label has been assigned to this point yet.
-        for x, y in itertools.product(range(0, self.model_x_size), 
-                                      range(0, self.model_y_size)):
-            p = (x, y)
-            self.catalog[p] = set(self.patterns_ids)
-        ############
-#        self.M[0, 0] = self.pattern_matrix[0, 0]
-#        self.catalog[(0, 0)] = set([self.pattern_matrix[0, 0]])
-        # Loop through each block
-        for x, y in itertools.product(range(0, self.model_x_size), 
-                                      range(0, self.model_y_size)):
-                p = (x, y)
-                # Check if the catalog is empty
-                assert len(self.catalog[p]) != 0, 'Point = {}'.format(p)
-                # Select any value of b for which C[p, b] = 1 at random.
-                b = self.weighted_random_choice(self.catalog[p])
-                self.M[x, y] = b
-                self.update_catalog(p)
+        for y, x in itertools.product(range(self.model_y_size),
+                                      range(self.model_x_size)):
+            p = (y, x)
+            self.catalog[p] = self.patterns_ids.copy()
+        # find a model M compatible with E
+        for y, x in itertools.product(range(self.model_y_size),
+                                      range(self.model_x_size)):
+            p = (y, x)
+            print(p)
+            # Check if the catalog is empty
+            assert len(self.catalog[p]) != 0, 'Point = {}'.format(p)
+            # Select any value of b for which C[p, b] = 1 at random.
+            b = self.weighted_random_choice(self.catalog[p])
+            self.M[y, x] = b
+            self.update_catalog(p)
 
     def get_output_image(self):
         
@@ -216,36 +238,50 @@ class DiscreteModelSynthesis(object):
             patterns[pattern_id] = pattern
         output_image = Image.new('RGB', (self.output_x_size, self.output_y_size))
         pixels = output_image.load() # create the pixel map
-        for x, y in itertools.product(range(self.model_x_size), 
-                                      range(self.model_y_size)):
-            pattern_id = self.M[x, y]
+        for y, x in itertools.product(range(self.model_y_size),
+                                      range(self.model_x_size)):
+            pattern_id = self.M[y, x]
             pattern = patterns[pattern_id]
             px = x*self.pattern_block_size
             py = y*self.pattern_block_size
-            for i in range(self.pattern_block_size):
-                for j in range(self.pattern_block_size):
-                    color = pattern.pattern[i,j]
-                    if color != -1 and \
-                        px+i < self.output_x_size and \
-                        py+j < self.output_y_size:
-                        pixels[px+i, py+j] = color
-            
+            for i, j in itertools.product(range(self.pattern_block_size),
+                                          range(self.pattern_block_size)):
+                color = pattern.pixels[i,j]
+                if px+j < self.output_x_size and \
+                   py+i < self.output_y_size:
+                    pixels[px+j, py+i] = (color[0], color[1], color[2])
+        
         plt.imshow(output_image)
         plt.show()
         return output_image
-                                   
+ 
+    def plot_patterns(self):
+        patterns = {}
+        for pattern, pattern_id in self.source_image_patterns.items():
+            patterns[pattern_id] = pattern
+            
+        number_of_patterns = len(patterns)
+        f, axarr = plt.subplots(1, number_of_patterns-1, figsize=(30,30))
+        for i in range(1, number_of_patterns):
+            axarr[i-1].imshow(patterns[i].pixels)
+            axarr[i-1].axis('off')
+            axarr[i-1].set_title(str(i))
+        plt.show()
+        
 if __name__ == '__main__':
-    sample_name = 'home-thumb.png'
-    image = Image.open("samples/{}".format(sample_name))
+    np.random.seed(42)
+    sample_name = 'Flowers'
+    image = cv2.imread(Image.open("samples/{}.png".format(sample_name)))
     plt.imshow(image)
     plt.show()
     X = image.size[0]
     Y = image.size[1]
-    print('x={}, y={}'.format(X, Y))
-    for i in range(10):
+    print('Input image size: x={}, y={}'.format(X, Y))
+    dms = DiscreteModelSynthesis(image, X, Y, pattern_block_size=3)
+    tmx = dms.x_transition_matrix
+    tmy = dms.y_transition_matrix
+    tm = dms.pattern_matrix
+    for i in range(1):
         print(i)
-        dms = DiscreteModelSynthesis(image, X, Y, pattern_block_size = 3)
-        pm = dms.pattern_matrix
-        tm = dms.x_transition_matrix
         dms.execute()
         dms.get_output_image()
